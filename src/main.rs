@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -842,6 +844,7 @@ impl VinceToolsApp {
 impl App for VinceToolsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_clipboard_history();
+        self.crazy_piano.update(ctx);
         let launcher_hovered = ctx.input(|input| input.pointer.hover_pos().is_some());
         let launcher_size = self.launcher_size(launcher_hovered);
         self.apply_launcher_window_shape(ctx, launcher_size);
