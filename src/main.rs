@@ -15,13 +15,17 @@ use egui::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tools::crazy_piano::CrazyPianoTool;
+
+mod tools;
 
 const APP_TITLE: &str = "Vince Tools";
 const FLOAT_MARGIN: f32 = 20.0;
 const COMPACT_SIZE: Vec2 = Vec2::new(76.0, 76.0);
-const MENU_SIZE: Vec2 = Vec2::new(248.0, 222.0);
+const MENU_SIZE: Vec2 = Vec2::new(248.0, 258.0);
 const TOOL_SIZE: Vec2 = Vec2::new(1040.0, 660.0);
 const CLIPBOARD_SIZE: Vec2 = Vec2::new(680.0, 560.0);
+const CRAZY_PIANO_SIZE: Vec2 = Vec2::new(760.0, 560.0);
 const SETTINGS_SIZE: Vec2 = Vec2::new(540.0, 360.0);
 const TOOL_TITLE_HEIGHT: f32 = 48.0;
 const WINDOW_CONTROL_WIDTH: f32 = 46.0;
@@ -105,6 +109,7 @@ struct VinceToolsApp {
     json: JsonToolState,
     clipboard: ClipboardHistoryState,
     clipboard_rx: mpsc::Receiver<String>,
+    crazy_piano: CrazyPianoTool,
     json_open: bool,
     json_center_pending: bool,
     json_last_position: Option<egui::Pos2>,
@@ -113,6 +118,10 @@ struct VinceToolsApp {
     clipboard_center_pending: bool,
     clipboard_last_position: Option<egui::Pos2>,
     clipboard_start_position: Option<egui::Pos2>,
+    crazy_piano_open: bool,
+    crazy_piano_center_pending: bool,
+    crazy_piano_last_position: Option<egui::Pos2>,
+    crazy_piano_start_position: Option<egui::Pos2>,
     settings_open: bool,
     settings_center_pending: bool,
     settings_last_position: Option<egui::Pos2>,
@@ -158,6 +167,7 @@ impl VinceToolsApp {
             json: JsonToolState::default(),
             clipboard: ClipboardHistoryState::default(),
             clipboard_rx: spawn_clipboard_watcher(),
+            crazy_piano: CrazyPianoTool::new(),
             json_open: false,
             json_center_pending: false,
             json_last_position: None,
@@ -166,6 +176,10 @@ impl VinceToolsApp {
             clipboard_center_pending: false,
             clipboard_last_position: None,
             clipboard_start_position: None,
+            crazy_piano_open: false,
+            crazy_piano_center_pending: false,
+            crazy_piano_last_position: None,
+            crazy_piano_start_position: None,
             settings_open: false,
             settings_center_pending: false,
             settings_last_position: None,
@@ -243,6 +257,9 @@ impl VinceToolsApp {
                 if full_width_button(ui, "剪贴板历史管理器").clicked() {
                     self.open_clipboard_history(ctx);
                 }
+                if full_width_button(ui, "疯狂钢琴").clicked() {
+                    self.open_crazy_piano(ctx);
+                }
                 if full_width_button(ui, "设置").clicked() {
                     self.open_settings(ctx);
                 }
@@ -273,6 +290,18 @@ impl VinceToolsApp {
         self.clipboard_open = true;
         self.clipboard_start_position = self.clipboard_last_position;
         self.clipboard_center_pending = true;
+        ctx.request_repaint();
+    }
+
+    fn open_crazy_piano(&mut self, ctx: &egui::Context) {
+        if self.crazy_piano_open {
+            focus_viewport(ctx, crazy_piano_viewport_id());
+            return;
+        }
+
+        self.crazy_piano_open = true;
+        self.crazy_piano_start_position = self.crazy_piano_last_position;
+        self.crazy_piano_center_pending = true;
         ctx.request_repaint();
     }
 
@@ -349,6 +378,26 @@ impl VinceToolsApp {
                     record_viewport_position(ctx, &mut self.clipboard_last_position);
                 }
                 self.show_clipboard_history(ctx);
+            });
+        }
+
+        if self.crazy_piano_open {
+            let builder = centered_tool_builder(ctx, "疯狂钢琴", CRAZY_PIANO_SIZE);
+            ctx.show_viewport_immediate(crazy_piano_viewport_id(), builder, |ctx, _class| {
+                if ctx.input(|input| input.viewport().close_requested()) {
+                    record_viewport_position(ctx, &mut self.crazy_piano_last_position);
+                    self.crazy_piano_open = false;
+                    return;
+                }
+                let placed_this_frame = place_viewport_once(
+                    ctx,
+                    &mut self.crazy_piano_center_pending,
+                    self.crazy_piano_start_position,
+                );
+                if !placed_this_frame {
+                    record_viewport_position(ctx, &mut self.crazy_piano_last_position);
+                }
+                self.show_crazy_piano(ctx);
             });
         }
 
@@ -563,6 +612,25 @@ impl VinceToolsApp {
                                 }
                             });
                     });
+                });
+            });
+    }
+
+    fn show_crazy_piano(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(tool_window_background_frame())
+            .show(ctx, |ui| {
+                tool_panel(ui, |ui| {
+                    if title_bar(ui, ctx, "疯狂钢琴") {
+                        self.crazy_piano_open = false;
+                        ctx.send_viewport_cmd(ViewportCommand::Close);
+                        return;
+                    }
+
+                    if self.crazy_piano.ui(ctx, ui) {
+                        self.crazy_piano_open = false;
+                        ctx.send_viewport_cmd(ViewportCommand::Close);
+                    }
                 });
             });
     }
@@ -1113,6 +1181,10 @@ fn json_viewport_id() -> ViewportId {
 
 fn clipboard_viewport_id() -> ViewportId {
     ViewportId::from_hash_of("vince-tools-clipboard-window")
+}
+
+fn crazy_piano_viewport_id() -> ViewportId {
+    ViewportId::from_hash_of("vince-tools-crazy-piano-window")
 }
 
 fn settings_viewport_id() -> ViewportId {
