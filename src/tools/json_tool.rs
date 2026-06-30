@@ -31,6 +31,19 @@ impl Default for JsonTool {
 }
 
 impl JsonTool {
+    pub fn with_input(input: String) -> Self {
+        let mut tool = Self::default();
+        tool.input = input;
+        if !tool.input.trim().is_empty() {
+            tool.auto_format_json();
+        }
+        tool
+    }
+
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+
     pub fn ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if primary_button(ui, "格式化").clicked() {

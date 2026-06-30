@@ -38,6 +38,9 @@ const MENU_BUTTON_HEIGHT: f32 = 30.0;
 const MENU_BUTTON_HOVER_FONT_SIZE: f32 = 13.5;
 const MENU_BUTTON_FONT_SIZE: f32 = 12.0;
 const DEFAULT_ICON_BYTES: &[u8] = include_bytes!("asset/default.png");
+const WINDOW_POSITIONS_FILE: &str = "window_positions.json";
+const JSON_INPUT_FILE: &str = "json_input.txt";
+const CLIPBOARD_HISTORY_FILE: &str = "clipboard_history.json";
 
 fn main() -> eframe::Result<()> {
     if std::env::args().any(|arg| arg == piano_overlay_protocol::PIANO_OVERLAY_CHILD_ARG) {
@@ -71,10 +74,25 @@ struct AppConfig {
     icon_path: Option<PathBuf>,
 }
 
+#[derive(Default, Deserialize, Serialize)]
+struct PersistedWindowPositions {
+    json: Option<WindowPosition>,
+    clipboard: Option<WindowPosition>,
+    crazy_piano: Option<WindowPosition>,
+    settings: Option<WindowPosition>,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+struct WindowPosition {
+    x: f32,
+    y: f32,
+}
+
 struct VinceToolsApp {
     config: AppConfig,
     config_path: PathBuf,
     config_dir: PathBuf,
+    data_dir: PathBuf,
     icon_texture: Option<TextureHandle>,
     icon_status: String,
     json: JsonTool,
@@ -108,6 +126,10 @@ impl VinceToolsApp {
         let config_dir = config_dir();
         let config_path = config_dir.join("config.json");
         let config = load_config(&config_path);
+        let data_dir = data_dir();
+        let windows = load_window_positions(&data_dir.join(WINDOW_POSITIONS_FILE));
+        let json_input = load_text_file(&data_dir.join(JSON_INPUT_FILE));
+        let clipboard_history = load_clipboard_history(&data_dir.join(CLIPBOARD_HISTORY_FILE));
         let (icon_texture, icon_status) = match config.icon_path.as_deref() {
             Some(path) => match load_icon_texture(&cc.egui_ctx, path) {
                 Ok(texture) => (Some(texture), "已加载自定义图标。".to_owned()),
@@ -132,26 +154,27 @@ impl VinceToolsApp {
             config,
             config_path,
             config_dir,
+            data_dir,
             icon_texture,
             icon_status,
-            json: JsonTool::default(),
-            clipboard: ClipboardHistoryTool::new(),
+            json: JsonTool::with_input(json_input),
+            clipboard: ClipboardHistoryTool::with_items(clipboard_history),
             crazy_piano: CrazyPianoTool::new(),
             json_open: false,
             json_center_pending: false,
-            json_last_position: None,
+            json_last_position: window_position_to_pos2(windows.json),
             json_start_position: None,
             clipboard_open: false,
             clipboard_center_pending: false,
-            clipboard_last_position: None,
+            clipboard_last_position: window_position_to_pos2(windows.clipboard),
             clipboard_start_position: None,
             crazy_piano_open: false,
             crazy_piano_center_pending: false,
-            crazy_piano_last_position: None,
+            crazy_piano_last_position: window_position_to_pos2(windows.crazy_piano),
             crazy_piano_start_position: None,
             settings_open: false,
             settings_center_pending: false,
-            settings_last_position: None,
+            settings_last_position: window_position_to_pos2(windows.settings),
             settings_start_position: None,
             last_launcher_size: None,
             launcher_user_moved: false,
@@ -545,6 +568,30 @@ impl VinceToolsApp {
             self.icon_status = format!("保存配置失败：{err}");
         }
     }
+
+    fn save_runtime_data(&self) {
+        let windows = PersistedWindowPositions {
+            json: pos2_to_window_position(self.json_last_position),
+            clipboard: pos2_to_window_position(self.clipboard_last_position),
+            crazy_piano: pos2_to_window_position(self.crazy_piano_last_position),
+            settings: pos2_to_window_position(self.settings_last_position),
+        };
+
+        if let Err(err) =
+            save_window_positions(&self.data_dir.join(WINDOW_POSITIONS_FILE), &windows)
+        {
+            eprintln!("failed to save window positions: {err}");
+        }
+        if let Err(err) = save_text_file(&self.data_dir.join(JSON_INPUT_FILE), self.json.input()) {
+            eprintln!("failed to save json input: {err}");
+        }
+        if let Err(err) = save_clipboard_history(
+            &self.data_dir.join(CLIPBOARD_HISTORY_FILE),
+            self.clipboard.items(),
+        ) {
+            eprintln!("failed to save clipboard history: {err}");
+        }
+    }
 }
 
 impl App for VinceToolsApp {
@@ -562,6 +609,10 @@ impl App for VinceToolsApp {
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         Color32::TRANSPARENT.to_normalized_gamma_f32()
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_runtime_data();
     }
 }
 
@@ -985,11 +1036,92 @@ fn config_dir() -> PathBuf {
         })
 }
 
+fn data_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return PathBuf::from(appdata)
+                .join("Vince")
+                .join("VinceTools")
+                .join("data");
+        }
+    }
+
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".vince-tools")
+        .join("data")
+}
+
 fn load_config(path: &Path) -> AppConfig {
     fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
+}
+
+fn load_window_positions(path: &Path) -> PersistedWindowPositions {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn save_window_positions(path: &Path, windows: &PersistedWindowPositions) -> Result<(), String> {
+    write_text_file(
+        path,
+        &serde_json::to_string_pretty(windows).map_err(|err| err.to_string())?,
+    )
+}
+
+fn load_text_file(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_default()
+}
+
+fn save_text_file(path: &Path, text: &str) -> Result<(), String> {
+    write_text_file(path, text)
+}
+
+fn load_clipboard_history(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn save_clipboard_history(path: &Path, items: &[String]) -> Result<(), String> {
+    write_text_file(
+        path,
+        &serde_json::to_string_pretty(items).map_err(|err| err.to_string())?,
+    )
+}
+
+fn write_text_file(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    fs::write(path, text).map_err(|err| err.to_string())
+}
+
+fn pos2_to_window_position(position: Option<egui::Pos2>) -> Option<WindowPosition> {
+    let position = position?;
+    if !position.x.is_finite() || !position.y.is_finite() {
+        return None;
+    }
+
+    Some(WindowPosition {
+        x: position.x,
+        y: position.y,
+    })
+}
+
+fn window_position_to_pos2(position: Option<WindowPosition>) -> Option<egui::Pos2> {
+    let position = position?;
+    if !position.x.is_finite() || !position.y.is_finite() {
+        return None;
+    }
+
+    Some(pos2(position.x, position.y))
 }
 
 fn save_config(path: &Path, config: &AppConfig) -> Result<(), String> {

@@ -21,6 +21,19 @@ impl ClipboardHistoryTool {
         }
     }
 
+    pub fn with_items(items: Vec<String>) -> Self {
+        let mut tool = Self::new();
+        tool.items = normalize_history_items(items);
+        if !tool.items.is_empty() {
+            tool.status = format!("已恢复 {} 条剪贴板历史。", tool.items.len());
+        }
+        tool
+    }
+
+    pub fn items(&self) -> &[String] {
+        &self.items
+    }
+
     pub fn poll(&mut self) {
         while let Ok(text) = self.rx.try_recv() {
             self.add_text(text);
@@ -140,6 +153,21 @@ fn spawn_clipboard_watcher() -> mpsc::Receiver<String> {
     });
 
     rx
+}
+
+fn normalize_history_items(items: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for item in items {
+        if item.is_empty() || normalized.contains(&item) {
+            continue;
+        }
+
+        normalized.push(item);
+        if normalized.len() >= CLIPBOARD_HISTORY_LIMIT {
+            break;
+        }
+    }
+    normalized
 }
 
 fn compact_preview(text: &str, max_chars: usize) -> String {
