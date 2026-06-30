@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use device_query::{DeviceQuery, DeviceState, Keycode};
-use eframe::egui::{self, Align, Color32, Layout, RichText, Sense, Stroke, UiBuilder, vec2};
+use eframe::egui::{self, Color32, RichText, Stroke, vec2};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, source::Source};
 
 use super::native_piano_overlay::{
@@ -28,10 +28,10 @@ const KEY_ACTIVE_SECONDS: f64 = 0.24;
 const KEY_THROTTLE_SECONDS: f64 = 0.045;
 const KEY_POLL_INTERVAL: Duration = Duration::from_millis(12);
 const MAX_OVERLAY_OPACITY: f32 = 0.5;
-const OVERLAY_OPACITY_BOOST: f32 = 0.07;
+const DEFAULT_OVERLAY_OPACITY_BOOST: f32 = 0.07;
+const DEFAULT_MIN_OVERLAY_OPACITY: f32 = 0.0;
+const DEFAULT_OVERLAY_FADE_SECONDS: f32 = 1.1;
 const OVERLAY_IDLE_DELAY: f64 = 0.25;
-const OVERLAY_FADE_SPEED: f32 = 0.9;
-const OVERLAY_HIDE_THRESHOLD: f32 = 0.02;
 const WHITE_KEY_WIDTH: f32 = 82.0;
 const SPACE_KEY_WIDTH: f32 = 154.0;
 const BLACK_KEY_WIDTH: f32 = 34.0;
@@ -51,6 +51,9 @@ pub struct CrazyPianoTool {
     animation_enabled: bool,
     volume: f32,
     overlay_height: f32,
+    overlay_opacity_boost: f32,
+    min_overlay_opacity: f32,
+    overlay_fade_seconds: f32,
     overlay_opacity: f32,
     last_key_at: f64,
     last_overlay_tick: f64,
@@ -73,6 +76,9 @@ impl CrazyPianoTool {
             animation_enabled: true,
             volume: 0.7,
             overlay_height: DEFAULT_OVERLAY_HEIGHT,
+            overlay_opacity_boost: DEFAULT_OVERLAY_OPACITY_BOOST,
+            min_overlay_opacity: DEFAULT_MIN_OVERLAY_OPACITY,
+            overlay_fade_seconds: DEFAULT_OVERLAY_FADE_SECONDS,
             overlay_opacity: 0.0,
             last_key_at: -1.0,
             last_overlay_tick: 0.0,
@@ -95,83 +101,59 @@ impl CrazyPianoTool {
         }
     }
 
-    pub fn ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) -> bool {
-        let available = ui.available_size();
-        let (rect, _) = ui.allocate_exact_size(available, Sense::hover());
-        ui.painter()
-            .rect_filled(rect, 0.0, Color32::from_rgb(17, 24, 39));
-
-        let mut back_home = false;
-        ui.scope_builder(
-            UiBuilder::new()
-                .max_rect(rect.shrink2(vec2(18.0, 16.0)))
-                .layout(Layout::top_down(Align::Min)),
-            |ui| {
-                back_home = self.draw_config_page(ctx, ui);
-            },
-        );
-
-        back_home
+    pub fn ui(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
+        self.draw_config_page(ui);
     }
 
     pub fn overlay_visible(&self) -> bool {
         self.enabled && self.overlay_opacity > 0.001
     }
 
-    fn draw_config_page(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) -> bool {
-        let mut back_home = false;
-
+    fn draw_config_page(&mut self, ui: &mut egui::Ui) {
+        let recent = self
+            .recent_key
+            .map(|key| key.display_name())
+            .unwrap_or("等待输入");
         ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new("疯狂钢琴")
-                        .size(28.0)
-                        .strong()
-                        .color(Color32::from_rgb(248, 250, 252)),
-                );
-                ui.label(
-                    RichText::new("全局键盘演奏已准备好")
-                        .size(14.0)
-                        .color(Color32::from_rgb(199, 210, 254)),
-                );
-            });
-
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if stage_button(ui, "返回首页", 86.0).clicked() {
-                    back_home = true;
-                }
-            });
+            ui.label(
+                RichText::new("全局键盘演奏已准备好")
+                    .strong()
+                    .color(Color32::from_rgb(42, 57, 82)),
+            );
+            ui.separator();
+            ui.label(
+                RichText::new(format!("最近：{recent}")).color(Color32::from_rgb(79, 88, 105)),
+            );
         });
 
-        ui.add_space(16.0);
+        ui.add_space(12.0);
+        let frame_width = ui.available_width();
         egui::Frame::new()
-            .fill(Color32::from_rgba_unmultiplied(0, 0, 0, 130))
-            .stroke(Stroke::new(
-                1.0,
-                Color32::from_rgba_unmultiplied(148, 163, 184, 62),
-            ))
+            .fill(Color32::from_rgb(248, 250, 253))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(222, 230, 242)))
             .corner_radius(8)
-            .inner_margin(16)
+            .inner_margin(14)
             .show(ui, |ui| {
+                ui.set_min_width((frame_width - 28.0).max(0.0));
                 ui.horizontal(|ui| {
                     toggle_chip(ui, "工具开启", &mut self.enabled);
                     toggle_chip(ui, "启用音效", &mut self.sound_enabled);
                     toggle_chip(ui, "显示按键动画", &mut self.animation_enabled);
                 });
 
-                ui.add_space(18.0);
+                ui.add_space(16.0);
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("音量")
                             .size(13.0)
-                            .color(Color32::from_rgb(226, 232, 240)),
+                            .color(Color32::from_rgb(42, 57, 82)),
                     );
                     styled_slider(ui, &mut self.volume, 0.0..=1.0, 180.0);
                     ui.add_space(18.0);
                     ui.label(
                         RichText::new("显示高度")
                             .size(13.0)
-                            .color(Color32::from_rgb(226, 232, 240)),
+                            .color(Color32::from_rgb(42, 57, 82)),
                     );
                     styled_slider(
                         ui,
@@ -182,38 +164,59 @@ impl CrazyPianoTool {
                     ui.label(
                         RichText::new(format!("{:.0}px", self.overlay_height))
                             .size(12.0)
-                            .color(Color32::from_rgb(199, 210, 254)),
+                            .color(Color32::from_rgb(79, 88, 105)),
                     );
                 });
 
-                ui.add_space(18.0);
-                let recent = self
-                    .recent_key
-                    .map(|key| key.display_name())
-                    .unwrap_or("等待输入");
+                ui.add_space(12.0);
+                ui.horizontal_wrapped(|ui| {
+                    parameter_slider(
+                        ui,
+                        "连续按键透明度系数",
+                        &mut self.overlay_opacity_boost,
+                        0.0..=0.25,
+                        150.0,
+                    );
+                    parameter_slider(
+                        ui,
+                        "最小透明度",
+                        &mut self.min_overlay_opacity,
+                        0.0..=MAX_OVERLAY_OPACITY,
+                        150.0,
+                    );
+                    parameter_slider(
+                        ui,
+                        "渐隐时间",
+                        &mut self.overlay_fade_seconds,
+                        0.1..=5.0,
+                        150.0,
+                    );
+                    ui.label(
+                        RichText::new("秒")
+                            .size(12.0)
+                            .color(Color32::from_rgb(79, 88, 105)),
+                    );
+                });
+
+                ui.add_space(16.0);
                 ui.label(
                     RichText::new(format!("最近：{recent}"))
                         .size(16.0)
                         .strong()
-                        .color(Color32::from_rgb(252, 211, 77)),
+                        .color(Color32::from_rgb(37, 99, 235)),
                 );
                 ui.add_space(6.0);
                 ui.label(
                     RichText::new(self.status_text())
                         .size(13.0)
-                        .color(Color32::from_rgb(203, 213, 225)),
+                        .color(Color32::from_rgb(79, 88, 105)),
                 );
                 ui.label(
                     RichText::new(&self.listener_status)
                         .size(12.0)
-                        .color(Color32::from_rgb(148, 163, 184)),
+                        .color(Color32::from_rgb(102, 116, 139)),
                 );
             });
-
-        if back_home {
-            ctx.request_repaint();
-        }
-        back_home
     }
 
     fn sync_keyboard_listener(&mut self) {
@@ -259,8 +262,10 @@ impl CrazyPianoTool {
         self.recent_key = Some(event.key);
         self.last_error = None;
         self.last_key_at = event.at;
-        self.overlay_opacity =
-            (self.overlay_opacity + OVERLAY_OPACITY_BOOST).min(MAX_OVERLAY_OPACITY);
+        let min_opacity = self.min_overlay_opacity.clamp(0.0, MAX_OVERLAY_OPACITY);
+        self.overlay_opacity = (self.overlay_opacity.max(min_opacity)
+            + self.overlay_opacity_boost.clamp(0.0, MAX_OVERLAY_OPACITY))
+        .min(MAX_OVERLAY_OPACITY);
 
         if self.animation_enabled {
             self.active_keys.insert(event.key, event.at);
@@ -276,7 +281,6 @@ impl CrazyPianoTool {
     fn update_overlay_opacity(&mut self, now: f64) {
         if !self.enabled {
             self.overlay_opacity = 0.0;
-            self.overlay.hide();
             self.last_overlay_tick = now;
             return;
         }
@@ -290,8 +294,11 @@ impl CrazyPianoTool {
         self.last_overlay_tick = now;
 
         if self.last_key_at >= 0.0 && now - self.last_key_at > OVERLAY_IDLE_DELAY {
-            self.overlay_opacity = (self.overlay_opacity - dt * OVERLAY_FADE_SPEED).max(0.0);
-            if self.overlay_opacity <= OVERLAY_HIDE_THRESHOLD {
+            let min_opacity = self.min_overlay_opacity.clamp(0.0, MAX_OVERLAY_OPACITY);
+            let fade_seconds = self.overlay_fade_seconds.max(0.1);
+            let fade_per_second = (MAX_OVERLAY_OPACITY - min_opacity).max(0.01) / fade_seconds;
+            self.overlay_opacity = (self.overlay_opacity - dt * fade_per_second).max(min_opacity);
+            if min_opacity <= 0.001 && self.overlay_opacity <= 0.001 {
                 self.overlay_opacity = 0.0;
             }
         }
@@ -795,29 +802,19 @@ fn letter_label(letter: char) -> &'static str {
     }
 }
 
-fn stage_button(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
-    ui.add_sized(
-        [width, 28.0],
-        egui::Button::new(RichText::new(text).size(12.0).color(Color32::WHITE))
-            .fill(Color32::from_rgba_unmultiplied(99, 102, 241, 160))
-            .stroke(Stroke::new(
-                1.0,
-                Color32::from_rgba_unmultiplied(199, 210, 254, 90),
-            ))
-            .corner_radius(6),
-    )
-}
-
 fn toggle_chip(ui: &mut egui::Ui, text: &str, value: &mut bool) {
-    let fill = if *value {
-        Color32::from_rgba_unmultiplied(99, 102, 241, 190)
+    let (fill, stroke, text_color) = if *value {
+        (
+            Color32::from_rgb(91, 107, 238),
+            Color32::from_rgb(91, 107, 238),
+            Color32::WHITE,
+        )
     } else {
-        Color32::from_rgba_unmultiplied(15, 23, 42, 210)
-    };
-    let stroke = if *value {
-        Color32::from_rgba_unmultiplied(199, 210, 254, 110)
-    } else {
-        Color32::from_rgba_unmultiplied(148, 163, 184, 88)
+        (
+            Color32::from_rgb(248, 250, 253),
+            Color32::from_rgb(205, 213, 225),
+            Color32::from_rgb(42, 57, 82),
+        )
     };
     let label = if *value {
         format!("{text}：开")
@@ -827,7 +824,7 @@ fn toggle_chip(ui: &mut egui::Ui, text: &str, value: &mut bool) {
 
     if ui
         .add(
-            egui::Button::new(RichText::new(label).size(12.0).color(Color32::WHITE))
+            egui::Button::new(RichText::new(label).size(12.0).color(text_color))
                 .fill(fill)
                 .stroke(Stroke::new(1.0, stroke))
                 .corner_radius(13)
@@ -846,13 +843,27 @@ fn styled_slider(
     width: f32,
 ) {
     ui.scope(|ui| {
-        ui.visuals_mut().widgets.inactive.bg_fill =
-            Color32::from_rgba_unmultiplied(15, 23, 42, 210);
-        ui.visuals_mut().widgets.hovered.bg_fill = Color32::from_rgba_unmultiplied(30, 41, 59, 230);
-        ui.visuals_mut().widgets.active.bg_fill = Color32::from_rgb(99, 102, 241);
+        ui.visuals_mut().widgets.inactive.bg_fill = Color32::from_rgb(226, 232, 240);
+        ui.visuals_mut().widgets.hovered.bg_fill = Color32::from_rgb(214, 223, 238);
+        ui.visuals_mut().widgets.active.bg_fill = Color32::from_rgb(91, 107, 238);
         ui.add_sized(
             [width, 22.0],
             egui::Slider::new(value, range).show_value(true),
         );
     });
+}
+
+fn parameter_slider(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    width: f32,
+) {
+    ui.label(
+        RichText::new(label)
+            .size(13.0)
+            .color(Color32::from_rgb(42, 57, 82)),
+    );
+    styled_slider(ui, value, range, width);
 }

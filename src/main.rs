@@ -3,8 +3,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, mpsc},
-    thread,
+    sync::Arc,
     time::Duration,
 };
 
@@ -16,8 +15,9 @@ use egui::{
     pos2, vec2,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tools::crazy_piano::CrazyPianoTool;
+use tools::{
+    clipboard_history::ClipboardHistoryTool, crazy_piano::CrazyPianoTool, json_tool::JsonTool,
+};
 
 mod tools;
 
@@ -31,7 +31,10 @@ const CRAZY_PIANO_SIZE: Vec2 = Vec2::new(760.0, 560.0);
 const SETTINGS_SIZE: Vec2 = Vec2::new(540.0, 360.0);
 const TOOL_TITLE_HEIGHT: f32 = 48.0;
 const WINDOW_CONTROL_WIDTH: f32 = 46.0;
-const CLIPBOARD_HISTORY_LIMIT: usize = 60;
+const MENU_BUTTON_SLOT_HEIGHT: f32 = 34.0;
+const MENU_BUTTON_HEIGHT: f32 = 30.0;
+const MENU_BUTTON_HOVER_FONT_SIZE: f32 = 13.5;
+const MENU_BUTTON_FONT_SIZE: f32 = 12.0;
 const DEFAULT_ICON_BYTES: &[u8] = include_bytes!("asset/default.png");
 
 fn main() -> eframe::Result<()> {
@@ -61,56 +64,14 @@ struct AppConfig {
     icon_path: Option<PathBuf>,
 }
 
-struct FieldMatch {
-    path: String,
-    preview: String,
-}
-
-struct JsonToolState {
-    input: String,
-    output: String,
-    search_query: String,
-    matches: Vec<FieldMatch>,
-    status: String,
-    search_status: String,
-}
-
-impl Default for JsonToolState {
-    fn default() -> Self {
-        Self {
-            input: String::new(),
-            output: String::new(),
-            search_query: String::new(),
-            matches: Vec::new(),
-            status: "粘贴 JSON 后点击格式化或压缩。".to_owned(),
-            search_status: "输入字段名后搜索。".to_owned(),
-        }
-    }
-}
-
-struct ClipboardHistoryState {
-    items: Vec<String>,
-    status: String,
-}
-
-impl Default for ClipboardHistoryState {
-    fn default() -> Self {
-        Self {
-            items: Vec::new(),
-            status: "监听中，复制文本后会自动出现在这里。".to_owned(),
-        }
-    }
-}
-
 struct VinceToolsApp {
     config: AppConfig,
     config_path: PathBuf,
     config_dir: PathBuf,
     icon_texture: Option<TextureHandle>,
     icon_status: String,
-    json: JsonToolState,
-    clipboard: ClipboardHistoryState,
-    clipboard_rx: mpsc::Receiver<String>,
+    json: JsonTool,
+    clipboard: ClipboardHistoryTool,
     crazy_piano: CrazyPianoTool,
     json_open: bool,
     json_center_pending: bool,
@@ -166,9 +127,8 @@ impl VinceToolsApp {
             config_dir,
             icon_texture,
             icon_status,
-            json: JsonToolState::default(),
-            clipboard: ClipboardHistoryState::default(),
-            clipboard_rx: spawn_clipboard_watcher(),
+            json: JsonTool::default(),
+            clipboard: ClipboardHistoryTool::new(),
             crazy_piano: CrazyPianoTool::new(),
             json_open: false,
             json_center_pending: false,
@@ -436,121 +396,9 @@ impl VinceToolsApp {
                     }
 
                     tool_body(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if primary_button(ui, "格式化").clicked() {
-                                self.format_json();
-                            }
-                            if secondary_button(ui, "压缩").clicked() {
-                                self.compact_json();
-                            }
-                            if secondary_button(ui, "复制结果").clicked() {
-                                if self.json.output.is_empty() {
-                                    self.json.status = "没有可复制的结果。".to_owned();
-                                } else {
-                                    ctx.copy_text(self.json.output.clone());
-                                    self.json.status = "已复制格式化结果。".to_owned();
-                                }
-                            }
-                            if danger_button(ui, "清空").clicked() {
-                                self.json = JsonToolState::default();
-                            }
-                            ui.separator();
-                            ui.label(
-                                RichText::new(&self.json.status)
-                                    .color(Color32::from_rgb(79, 88, 105)),
-                            );
-                        });
-
-                        ui.add_space(10.0);
-                        self.search_bar(ui);
-                        ui.add_space(10.0);
-
-                        let editor_height = (ui.available_height() - 116.0).max(300.0);
-                        ui.columns(2, |columns| {
-                            columns[0].label(RichText::new("输入 JSON").strong());
-                            let input_width = columns[0].available_width();
-                            let input_response = scrollable_code_editor(
-                                &mut columns[0],
-                                "json_input_editor",
-                                &mut self.json.input,
-                                vec2(input_width, editor_height),
-                                true,
-                                "{\"name\":\"vince\"}",
-                            );
-                            if input_response.changed() {
-                                self.auto_format_json();
-                            }
-
-                            columns[1].label(RichText::new("格式化结果").strong());
-                            let output_width = columns[1].available_width();
-                            scrollable_code_editor(
-                                &mut columns[1],
-                                "json_output_editor",
-                                &mut self.json.output,
-                                vec2(output_width, editor_height),
-                                false,
-                                "",
-                            );
-                        });
-
-                        ui.add_space(8.0);
-                        self.search_results(ui);
+                        self.json.ui(ctx, ui);
                     });
                 });
-            });
-    }
-
-    fn search_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("字段搜索");
-            let response = ui.add_sized(
-                [260.0, 28.0],
-                egui::TextEdit::singleline(&mut self.json.search_query)
-                    .hint_text("输入字段名，例如 user_id"),
-            );
-            let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
-            if primary_button(ui, "搜索").clicked() || (response.lost_focus() && enter_pressed) {
-                self.run_field_search();
-            }
-            if secondary_button(ui, "清除搜索").clicked() {
-                self.json.search_query.clear();
-                self.json.matches.clear();
-                self.json.search_status = "输入字段名后搜索。".to_owned();
-            }
-            ui.label(RichText::new(&self.json.search_status).color(Color32::from_rgb(79, 88, 105)));
-        });
-    }
-
-    fn search_results(&mut self, ui: &mut egui::Ui) {
-        if self.json.matches.is_empty() {
-            return;
-        }
-
-        egui::Frame::new()
-            .fill(Color32::from_rgb(244, 247, 250))
-            .stroke(Stroke::new(1.0, Color32::from_rgb(219, 226, 235)))
-            .corner_radius(8)
-            .inner_margin(8)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(96.0)
-                    .show(ui, |ui| {
-                        egui::Grid::new("field_search_results")
-                            .num_columns(2)
-                            .striped(true)
-                            .spacing(vec2(18.0, 6.0))
-                            .show(ui, |ui| {
-                                ui.strong("路径");
-                                ui.strong("值预览");
-                                ui.end_row();
-
-                                for matched in &self.json.matches {
-                                    ui.monospace(&matched.path);
-                                    ui.label(&matched.preview);
-                                    ui.end_row();
-                                }
-                            });
-                    });
             });
     }
 
@@ -566,53 +414,7 @@ impl VinceToolsApp {
                     }
 
                     tool_body(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(format!("已记录 {} 条", self.clipboard.items.len()))
-                                    .strong()
-                                    .color(Color32::from_rgb(42, 57, 82)),
-                            );
-                            if secondary_button(ui, "清空历史").clicked() {
-                                self.clipboard.items.clear();
-                                self.clipboard.status =
-                                    "历史已清空，继续监听新的复制文本。".to_owned();
-                            }
-                            ui.separator();
-                            ui.label(
-                                RichText::new(&self.clipboard.status)
-                                    .color(Color32::from_rgb(79, 88, 105)),
-                            );
-                        });
-
-                        ui.add_space(12.0);
-                        if self.clipboard.items.is_empty() {
-                            ui.vertical_centered(|ui| {
-                                ui.add_space(120.0);
-                                ui.label(
-                                    RichText::new("暂无剪贴板文本历史")
-                                        .size(18.0)
-                                        .color(Color32::from_rgb(102, 116, 139)),
-                                );
-                                ui.label(
-                                    RichText::new("复制一段文本后，它会自动出现在这里。")
-                                        .color(Color32::from_rgb(127, 139, 158)),
-                                );
-                            });
-                            return;
-                        }
-
-                        egui::ScrollArea::vertical()
-                            .id_salt("clipboard_history_list")
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                for index in 0..self.clipboard.items.len() {
-                                    let text = self.clipboard.items[index].clone();
-                                    if clipboard_item_button(ui, &text).clicked() {
-                                        self.restore_clipboard_text(text);
-                                    }
-                                    ui.add_space(8.0);
-                                }
-                            });
+                        self.clipboard.ui(ui);
                     });
                 });
             });
@@ -629,10 +431,9 @@ impl VinceToolsApp {
                         return;
                     }
 
-                    if self.crazy_piano.ui(ctx, ui) {
-                        self.crazy_piano_open = false;
-                        ctx.send_viewport_cmd(ViewportCommand::Close);
-                    }
+                    tool_body(ui, |ui| {
+                        self.crazy_piano.ui(ctx, ui);
+                    });
                 });
             });
     }
@@ -678,108 +479,6 @@ impl VinceToolsApp {
                     });
                 });
             });
-    }
-
-    fn format_json(&mut self) {
-        match parse_json(&self.json.input) {
-            Ok(value) => match serde_json::to_string_pretty(&value) {
-                Ok(output) => {
-                    self.json.output = output;
-                    self.json.status = "格式化完成。".to_owned();
-                    self.run_field_search();
-                }
-                Err(err) => self.json.status = format!("格式化失败：{err}"),
-            },
-            Err(err) => self.json.status = err,
-        }
-    }
-
-    fn compact_json(&mut self) {
-        match parse_json(&self.json.input) {
-            Ok(value) => match serde_json::to_string(&value) {
-                Ok(output) => {
-                    self.json.output = output;
-                    self.json.status = "压缩完成。".to_owned();
-                    self.run_field_search();
-                }
-                Err(err) => self.json.status = format!("压缩失败：{err}"),
-            },
-            Err(err) => self.json.status = err,
-        }
-    }
-
-    fn poll_clipboard_history(&mut self) {
-        while let Ok(text) = self.clipboard_rx.try_recv() {
-            self.add_clipboard_text(text);
-        }
-    }
-
-    fn add_clipboard_text(&mut self, text: String) {
-        if text.is_empty() {
-            return;
-        }
-
-        self.clipboard.items.retain(|item| item != &text);
-        self.clipboard.items.insert(0, text.clone());
-        self.clipboard.items.truncate(CLIPBOARD_HISTORY_LIMIT);
-        self.clipboard.status = format!("已捕获：{}", compact_preview(&text, 64));
-    }
-
-    fn restore_clipboard_text(&mut self, text: String) {
-        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text.clone())) {
-            Ok(()) => {
-                self.add_clipboard_text(text);
-                self.clipboard.status = "已恢复到剪贴板。".to_owned();
-            }
-            Err(err) => {
-                self.clipboard.status = format!("写入剪贴板失败：{err}");
-            }
-        }
-    }
-
-    fn auto_format_json(&mut self) {
-        if self.json.input.trim().is_empty() {
-            self.json.output.clear();
-            self.json.matches.clear();
-            self.json.status = "粘贴 JSON 后会自动格式化。".to_owned();
-            return;
-        }
-
-        match parse_json(&self.json.input) {
-            Ok(value) => match serde_json::to_string_pretty(&value) {
-                Ok(output) => {
-                    self.json.output = output;
-                    self.json.status = "已自动格式化。".to_owned();
-                    self.run_field_search();
-                }
-                Err(err) => self.json.status = format!("格式化失败：{err}"),
-            },
-            Err(err) => self.json.status = err,
-        }
-    }
-
-    fn run_field_search(&mut self) {
-        let query = self.json.search_query.trim();
-        self.json.matches.clear();
-
-        if query.is_empty() {
-            self.json.search_status = "输入字段名后搜索。".to_owned();
-            return;
-        }
-
-        match parse_json(&self.json.input) {
-            Ok(value) => {
-                search_fields(&value, &query.to_lowercase(), "$", &mut self.json.matches);
-                self.json.search_status = if self.json.matches.is_empty() {
-                    "未找到匹配字段。".to_owned()
-                } else {
-                    format!("找到 {} 个匹配字段。", self.json.matches.len())
-                };
-            }
-            Err(err) => {
-                self.json.search_status = err;
-            }
-        }
     }
 
     fn pick_icon(&mut self, ctx: &egui::Context) {
@@ -843,7 +542,7 @@ impl VinceToolsApp {
 
 impl App for VinceToolsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_clipboard_history();
+        self.clipboard.poll();
         self.crazy_piano.update(ctx);
         let launcher_hovered = ctx.input(|input| input.pointer.hover_pos().is_some());
         let launcher_size = self.launcher_size(launcher_hovered);
@@ -954,36 +653,36 @@ fn paint_horizontal_gradient_rect(
 }
 
 fn full_width_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add_sized([ui.available_width(), 30.0], menu_button(text))
+    menu_button_response(
+        ui,
+        text,
+        Color32::from_rgb(248, 250, 253),
+        Color32::from_rgb(218, 227, 240),
+        Color32::from_rgb(37, 51, 76),
+    )
 }
 
 fn full_width_primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add_sized(
-        [ui.available_width(), 30.0],
-        styled_button(
-            text,
-            Color32::from_rgb(61, 111, 246),
-            Color32::from_rgb(61, 111, 246),
-            Color32::WHITE,
-            120.0,
-        ),
+    menu_button_response(
+        ui,
+        text,
+        Color32::from_rgb(61, 111, 246),
+        Color32::from_rgb(61, 111, 246),
+        Color32::WHITE,
     )
 }
 
 fn full_width_danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add_sized(
-        [ui.available_width(), 30.0],
-        styled_button(
-            text,
-            Color32::from_rgb(255, 245, 245),
-            Color32::from_rgb(241, 190, 190),
-            Color32::from_rgb(154, 52, 52),
-            120.0,
-        ),
+    menu_button_response(
+        ui,
+        text,
+        Color32::from_rgb(255, 245, 245),
+        Color32::from_rgb(241, 190, 190),
+        Color32::from_rgb(154, 52, 52),
     )
 }
 
-fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+pub(crate) fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(styled_button(
         text,
         Color32::from_rgb(61, 111, 246),
@@ -993,7 +692,7 @@ fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ))
 }
 
-fn secondary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+pub(crate) fn secondary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(styled_button(
         text,
         Color32::from_rgb(244, 247, 252),
@@ -1003,7 +702,7 @@ fn secondary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ))
 }
 
-fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+pub(crate) fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(styled_button(
         text,
         Color32::from_rgb(255, 245, 245),
@@ -1078,14 +777,48 @@ fn paint_window_control_icon(ui: &egui::Ui, rect: Rect, kind: WindowControlKind)
     }
 }
 
-fn menu_button(text: &str) -> egui::Button<'_> {
-    styled_button(
+fn menu_button_response(
+    ui: &mut egui::Ui,
+    text: &str,
+    fill: Color32,
+    stroke: Color32,
+    text_color: Color32,
+) -> egui::Response {
+    let (slot_rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), MENU_BUTTON_SLOT_HEIGHT),
+        Sense::click(),
+    );
+    let hovered = response.hovered();
+    let rect = if hovered {
+        slot_rect
+    } else {
+        Rect::from_center_size(
+            slot_rect.center(),
+            vec2(slot_rect.width() - 6.0, MENU_BUTTON_HEIGHT),
+        )
+    };
+    let font_size = if hovered {
+        MENU_BUTTON_HOVER_FONT_SIZE
+    } else {
+        MENU_BUTTON_FONT_SIZE
+    };
+
+    ui.painter().rect(
+        rect,
+        6.0,
+        fill,
+        Stroke::new(1.0, stroke),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
         text,
-        Color32::from_rgb(248, 250, 253),
-        Color32::from_rgb(218, 227, 240),
-        Color32::from_rgb(37, 51, 76),
-        120.0,
-    )
+        egui::FontId::proportional(font_size),
+        text_color,
+    );
+
+    response
 }
 
 fn styled_button<'a>(
@@ -1102,22 +835,7 @@ fn styled_button<'a>(
         .min_size(vec2(min_width, 26.0))
 }
 
-fn clipboard_item_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    let preview = compact_preview(text, 160);
-    ui.add_sized(
-        [ui.available_width(), 46.0],
-        egui::Button::new(
-            RichText::new(preview)
-                .color(Color32::from_rgb(37, 51, 76))
-                .size(13.0),
-        )
-        .fill(Color32::from_rgb(248, 250, 253))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(222, 230, 242)))
-        .corner_radius(8),
-    )
-}
-
-fn scrollable_code_editor(
+pub(crate) fn scrollable_code_editor(
     ui: &mut egui::Ui,
     id_salt: &'static str,
     text: &mut String,
@@ -1261,83 +979,6 @@ fn record_viewport_position(ctx: &egui::Context, position: &mut Option<egui::Pos
     }
 }
 
-fn parse_json(input: &str) -> Result<Value, String> {
-    if input.trim().is_empty() {
-        return Err("请输入 JSON。".to_owned());
-    }
-    serde_json::from_str(input).map_err(|err| format!("JSON 解析失败：{err}"))
-}
-
-fn search_fields(value: &Value, needle: &str, path: &str, matches: &mut Vec<FieldMatch>) {
-    match value {
-        Value::Object(map) => {
-            for (key, child) in map {
-                let child_path = join_field_path(path, key);
-                if key.to_lowercase().contains(needle) {
-                    matches.push(FieldMatch {
-                        path: child_path.clone(),
-                        preview: value_preview(child),
-                    });
-                }
-                search_fields(child, needle, &child_path, matches);
-            }
-        }
-        Value::Array(items) => {
-            for (index, child) in items.iter().enumerate() {
-                search_fields(child, needle, &format!("{path}[{index}]"), matches);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn join_field_path(parent: &str, key: &str) -> String {
-    if is_plain_field_name(key) {
-        format!("{parent}.{key}")
-    } else {
-        let encoded = serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_owned());
-        format!("{parent}[{encoded}]")
-    }
-}
-
-fn is_plain_field_name(key: &str) -> bool {
-    let mut chars = key.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
-fn value_preview(value: &Value) -> String {
-    let raw = match value {
-        Value::String(text) => text.clone(),
-        _ => serde_json::to_string(value).unwrap_or_default(),
-    };
-    truncate_chars(&raw, 120)
-}
-
-fn compact_preview(text: &str, max_chars: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.is_empty() {
-        return "[空白文本]".to_owned();
-    }
-    truncate_chars(&compact, max_chars)
-}
-
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_owned();
-    }
-
-    let mut truncated = text
-        .chars()
-        .take(max_chars.saturating_sub(1))
-        .collect::<String>();
-    truncated.push('…');
-    truncated
-}
-
 fn config_dir() -> PathBuf {
     ProjectDirs::from("dev", "Vince", "VinceTools")
         .map(|dirs| dirs.config_dir().to_path_buf())
@@ -1361,30 +1002,6 @@ fn save_config(path: &Path, config: &AppConfig) -> Result<(), String> {
     }
     let text = serde_json::to_string_pretty(config).map_err(|err| err.to_string())?;
     fs::write(path, text).map_err(|err| err.to_string())
-}
-
-fn spawn_clipboard_watcher() -> mpsc::Receiver<String> {
-    let (tx, rx) = mpsc::channel();
-
-    thread::spawn(move || {
-        let mut last_text = String::new();
-
-        loop {
-            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
-                Ok(text) if !text.is_empty() && text != last_text => {
-                    last_text = text.clone();
-                    if tx.send(text).is_err() {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-
-            thread::sleep(Duration::from_millis(700));
-        }
-    });
-
-    rx
 }
 
 fn has_png_extension(path: &Path) -> bool {
@@ -1418,9 +1035,9 @@ fn load_icon_texture_from_bytes(
 
 fn install_cjk_font(ctx: &egui::Context) {
     let candidates = [
-        r"C:\Windows\Fonts\simhei.ttf",
         r"C:\Windows\Fonts\msyh.ttc",
         r"C:\Windows\Fonts\msyh.ttf",
+        r"C:\Windows\Fonts\simhei.ttf",
         r"C:\Windows\Fonts\Deng.ttf",
     ];
 
