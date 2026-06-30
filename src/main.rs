@@ -10,13 +10,16 @@ use std::{
 use directories::ProjectDirs;
 use eframe::{App, CreationContext, egui};
 use egui::{
-    Align, Color32, FontData, FontDefinitions, FontFamily, Layout, Rect, RichText, Sense, Stroke,
-    TextureHandle, TextureOptions, UiBuilder, Vec2, ViewportBuilder, ViewportCommand, ViewportId,
-    pos2, vec2,
+    Align, Color32, CursorIcon, FontData, FontDefinitions, FontFamily, Layout, Rect, RichText,
+    Sense, Stroke, TextureHandle, TextureOptions, UiBuilder, Vec2, ViewportBuilder,
+    ViewportCommand, ViewportId, pos2, vec2, viewport::ResizeDirection,
 };
 use serde::{Deserialize, Serialize};
 use tools::{
-    clipboard_history::ClipboardHistoryTool, crazy_piano::CrazyPianoTool, json_tool::JsonTool,
+    clipboard_history::ClipboardHistoryTool,
+    crazy_piano::CrazyPianoTool,
+    json_tool::JsonTool,
+    todo_list::{TodoList, TodoListTool},
 };
 
 mod piano_overlay_child;
@@ -26,12 +29,16 @@ mod tools;
 const APP_TITLE: &str = "Vince Tools";
 const FLOAT_MARGIN: f32 = 20.0;
 const COMPACT_SIZE: Vec2 = Vec2::new(76.0, 76.0);
-const MENU_SIZE: Vec2 = Vec2::new(248.0, 258.0);
+const MENU_SIZE: Vec2 = Vec2::new(248.0, 300.0);
 const TOOL_SIZE: Vec2 = Vec2::new(1040.0, 660.0);
 const CLIPBOARD_SIZE: Vec2 = Vec2::new(680.0, 560.0);
 const CRAZY_PIANO_SIZE: Vec2 = Vec2::new(760.0, 560.0);
+const TODO_LIST_SIZE: Vec2 = Vec2::new(820.0, 640.0);
 const SETTINGS_SIZE: Vec2 = Vec2::new(540.0, 360.0);
+const TOOL_MIN_SIZE: Vec2 = Vec2::new(360.0, 240.0);
 const TOOL_TITLE_HEIGHT: f32 = 48.0;
+const TOOL_RESIZE_EDGE: f32 = 6.0;
+const TOOL_RESIZE_CORNER: f32 = 16.0;
 const WINDOW_CONTROL_WIDTH: f32 = 46.0;
 const MENU_BUTTON_SLOT_HEIGHT: f32 = 34.0;
 const MENU_BUTTON_HEIGHT: f32 = 30.0;
@@ -41,6 +48,7 @@ const DEFAULT_ICON_BYTES: &[u8] = include_bytes!("asset/default.png");
 const WINDOW_POSITIONS_FILE: &str = "window_positions.json";
 const JSON_INPUT_FILE: &str = "json_input.txt";
 const CLIPBOARD_HISTORY_FILE: &str = "clipboard_history.json";
+const TODO_LISTS_FILE: &str = "todo_lists.json";
 
 fn main() -> eframe::Result<()> {
     if std::env::args().any(|arg| arg == piano_overlay_protocol::PIANO_OVERLAY_CHILD_ARG) {
@@ -79,6 +87,7 @@ struct PersistedWindowPositions {
     json: Option<WindowPosition>,
     clipboard: Option<WindowPosition>,
     crazy_piano: Option<WindowPosition>,
+    todo_list: Option<WindowPosition>,
     settings: Option<WindowPosition>,
 }
 
@@ -86,6 +95,10 @@ struct PersistedWindowPositions {
 struct WindowPosition {
     x: f32,
     y: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    width: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    height: Option<f32>,
 }
 
 struct VinceToolsApp {
@@ -98,21 +111,31 @@ struct VinceToolsApp {
     json: JsonTool,
     clipboard: ClipboardHistoryTool,
     crazy_piano: CrazyPianoTool,
+    todo_list: TodoListTool,
     json_open: bool,
     json_center_pending: bool,
     json_last_position: Option<egui::Pos2>,
+    json_last_size: Option<Vec2>,
     json_start_position: Option<egui::Pos2>,
     clipboard_open: bool,
     clipboard_center_pending: bool,
     clipboard_last_position: Option<egui::Pos2>,
+    clipboard_last_size: Option<Vec2>,
     clipboard_start_position: Option<egui::Pos2>,
     crazy_piano_open: bool,
     crazy_piano_center_pending: bool,
     crazy_piano_last_position: Option<egui::Pos2>,
+    crazy_piano_last_size: Option<Vec2>,
     crazy_piano_start_position: Option<egui::Pos2>,
+    todo_list_open: bool,
+    todo_list_center_pending: bool,
+    todo_list_last_position: Option<egui::Pos2>,
+    todo_list_last_size: Option<Vec2>,
+    todo_list_start_position: Option<egui::Pos2>,
     settings_open: bool,
     settings_center_pending: bool,
     settings_last_position: Option<egui::Pos2>,
+    settings_last_size: Option<Vec2>,
     settings_start_position: Option<egui::Pos2>,
     last_launcher_size: Option<Vec2>,
     launcher_user_moved: bool,
@@ -130,6 +153,7 @@ impl VinceToolsApp {
         let windows = load_window_positions(&data_dir.join(WINDOW_POSITIONS_FILE));
         let json_input = load_text_file(&data_dir.join(JSON_INPUT_FILE));
         let clipboard_history = load_clipboard_history(&data_dir.join(CLIPBOARD_HISTORY_FILE));
+        let todo_lists = load_todo_lists(&data_dir.join(TODO_LISTS_FILE));
         let (icon_texture, icon_status) = match config.icon_path.as_deref() {
             Some(path) => match load_icon_texture(&cc.egui_ctx, path) {
                 Ok(texture) => (Some(texture), "已加载自定义图标。".to_owned()),
@@ -160,21 +184,31 @@ impl VinceToolsApp {
             json: JsonTool::with_input(json_input),
             clipboard: ClipboardHistoryTool::with_items(clipboard_history),
             crazy_piano: CrazyPianoTool::new(),
+            todo_list: TodoListTool::with_lists(todo_lists),
             json_open: false,
             json_center_pending: false,
             json_last_position: window_position_to_pos2(windows.json),
+            json_last_size: window_position_to_size(windows.json),
             json_start_position: None,
             clipboard_open: false,
             clipboard_center_pending: false,
             clipboard_last_position: window_position_to_pos2(windows.clipboard),
+            clipboard_last_size: window_position_to_size(windows.clipboard),
             clipboard_start_position: None,
             crazy_piano_open: false,
             crazy_piano_center_pending: false,
             crazy_piano_last_position: window_position_to_pos2(windows.crazy_piano),
+            crazy_piano_last_size: window_position_to_size(windows.crazy_piano),
             crazy_piano_start_position: None,
+            todo_list_open: false,
+            todo_list_center_pending: false,
+            todo_list_last_position: window_position_to_pos2(windows.todo_list),
+            todo_list_last_size: window_position_to_size(windows.todo_list),
+            todo_list_start_position: None,
             settings_open: false,
             settings_center_pending: false,
             settings_last_position: window_position_to_pos2(windows.settings),
+            settings_last_size: window_position_to_size(windows.settings),
             settings_start_position: None,
             last_launcher_size: None,
             launcher_user_moved: false,
@@ -252,6 +286,9 @@ impl VinceToolsApp {
                 if full_width_button(ui, "疯狂钢琴").clicked() {
                     self.open_crazy_piano(ctx);
                 }
+                if full_width_button(ui, "TODO List").clicked() {
+                    self.open_todo_list(ctx);
+                }
                 if full_width_button(ui, "设置").clicked() {
                     self.open_settings(ctx);
                 }
@@ -297,6 +334,18 @@ impl VinceToolsApp {
         ctx.request_repaint();
     }
 
+    fn open_todo_list(&mut self, ctx: &egui::Context) {
+        if self.todo_list_open {
+            focus_viewport(ctx, todo_list_viewport_id());
+            return;
+        }
+
+        self.todo_list_open = true;
+        self.todo_list_start_position = self.todo_list_last_position;
+        self.todo_list_center_pending = true;
+        ctx.request_repaint();
+    }
+
     fn open_settings(&mut self, ctx: &egui::Context) {
         if self.settings_open {
             focus_viewport(ctx, settings_viewport_id());
@@ -334,10 +383,18 @@ impl VinceToolsApp {
 
     fn show_tool_viewports(&mut self, ctx: &egui::Context) {
         if self.json_open {
-            let builder = centered_tool_builder(ctx, "JSON 格式化工具", TOOL_SIZE);
+            let builder = centered_tool_builder(
+                ctx,
+                "JSON 格式化工具",
+                self.json_last_size.unwrap_or(TOOL_SIZE),
+            );
             ctx.show_viewport_immediate(json_viewport_id(), builder, |ctx, _class| {
                 if ctx.input(|input| input.viewport().close_requested()) {
-                    record_viewport_position(ctx, &mut self.json_last_position);
+                    record_viewport_state(
+                        ctx,
+                        &mut self.json_last_position,
+                        &mut self.json_last_size,
+                    );
                     self.json_open = false;
                     return;
                 }
@@ -347,17 +404,29 @@ impl VinceToolsApp {
                     self.json_start_position,
                 );
                 if !placed_this_frame {
-                    record_viewport_position(ctx, &mut self.json_last_position);
+                    record_viewport_state(
+                        ctx,
+                        &mut self.json_last_position,
+                        &mut self.json_last_size,
+                    );
                 }
                 self.show_json_tool(ctx);
             });
         }
 
         if self.clipboard_open {
-            let builder = centered_tool_builder(ctx, "剪贴板历史管理器", CLIPBOARD_SIZE);
+            let builder = centered_tool_builder(
+                ctx,
+                "剪贴板历史管理器",
+                self.clipboard_last_size.unwrap_or(CLIPBOARD_SIZE),
+            );
             ctx.show_viewport_immediate(clipboard_viewport_id(), builder, |ctx, _class| {
                 if ctx.input(|input| input.viewport().close_requested()) {
-                    record_viewport_position(ctx, &mut self.clipboard_last_position);
+                    record_viewport_state(
+                        ctx,
+                        &mut self.clipboard_last_position,
+                        &mut self.clipboard_last_size,
+                    );
                     self.clipboard_open = false;
                     return;
                 }
@@ -367,17 +436,29 @@ impl VinceToolsApp {
                     self.clipboard_start_position,
                 );
                 if !placed_this_frame {
-                    record_viewport_position(ctx, &mut self.clipboard_last_position);
+                    record_viewport_state(
+                        ctx,
+                        &mut self.clipboard_last_position,
+                        &mut self.clipboard_last_size,
+                    );
                 }
                 self.show_clipboard_history(ctx);
             });
         }
 
         if self.crazy_piano_open {
-            let builder = centered_tool_builder(ctx, "疯狂钢琴", CRAZY_PIANO_SIZE);
+            let builder = centered_tool_builder(
+                ctx,
+                "疯狂钢琴",
+                self.crazy_piano_last_size.unwrap_or(CRAZY_PIANO_SIZE),
+            );
             ctx.show_viewport_immediate(crazy_piano_viewport_id(), builder, |ctx, _class| {
                 if ctx.input(|input| input.viewport().close_requested()) {
-                    record_viewport_position(ctx, &mut self.crazy_piano_last_position);
+                    record_viewport_state(
+                        ctx,
+                        &mut self.crazy_piano_last_position,
+                        &mut self.crazy_piano_last_size,
+                    );
                     self.crazy_piano_open = false;
                     return;
                 }
@@ -387,17 +468,61 @@ impl VinceToolsApp {
                     self.crazy_piano_start_position,
                 );
                 if !placed_this_frame {
-                    record_viewport_position(ctx, &mut self.crazy_piano_last_position);
+                    record_viewport_state(
+                        ctx,
+                        &mut self.crazy_piano_last_position,
+                        &mut self.crazy_piano_last_size,
+                    );
                 }
                 self.show_crazy_piano(ctx);
             });
         }
 
+        if self.todo_list_open {
+            let builder = centered_tool_builder(
+                ctx,
+                "TODO List",
+                self.todo_list_last_size.unwrap_or(TODO_LIST_SIZE),
+            );
+            ctx.show_viewport_immediate(todo_list_viewport_id(), builder, |ctx, _class| {
+                if ctx.input(|input| input.viewport().close_requested()) {
+                    record_viewport_state(
+                        ctx,
+                        &mut self.todo_list_last_position,
+                        &mut self.todo_list_last_size,
+                    );
+                    self.todo_list_open = false;
+                    return;
+                }
+                let placed_this_frame = place_viewport_once(
+                    ctx,
+                    &mut self.todo_list_center_pending,
+                    self.todo_list_start_position,
+                );
+                if !placed_this_frame {
+                    record_viewport_state(
+                        ctx,
+                        &mut self.todo_list_last_position,
+                        &mut self.todo_list_last_size,
+                    );
+                }
+                self.show_todo_list(ctx);
+            });
+        }
+
         if self.settings_open {
-            let builder = centered_tool_builder(ctx, "设置", SETTINGS_SIZE);
+            let builder = centered_tool_builder(
+                ctx,
+                "设置",
+                self.settings_last_size.unwrap_or(SETTINGS_SIZE),
+            );
             ctx.show_viewport_immediate(settings_viewport_id(), builder, |ctx, _class| {
                 if ctx.input(|input| input.viewport().close_requested()) {
-                    record_viewport_position(ctx, &mut self.settings_last_position);
+                    record_viewport_state(
+                        ctx,
+                        &mut self.settings_last_position,
+                        &mut self.settings_last_size,
+                    );
                     self.settings_open = false;
                     return;
                 }
@@ -407,7 +532,11 @@ impl VinceToolsApp {
                     self.settings_start_position,
                 );
                 if !placed_this_frame {
-                    record_viewport_position(ctx, &mut self.settings_last_position);
+                    record_viewport_state(
+                        ctx,
+                        &mut self.settings_last_position,
+                        &mut self.settings_last_size,
+                    );
                 }
                 self.show_settings(ctx);
             });
@@ -463,6 +592,24 @@ impl VinceToolsApp {
 
                     tool_body(ui, |ui| {
                         self.crazy_piano.ui(ctx, ui);
+                    });
+                });
+            });
+    }
+
+    fn show_todo_list(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(tool_window_background_frame())
+            .show(ctx, |ui| {
+                tool_panel(ui, |ui| {
+                    if title_bar(ui, ctx, "TODO List") {
+                        self.todo_list_open = false;
+                        ctx.send_viewport_cmd(ViewportCommand::Close);
+                        return;
+                    }
+
+                    tool_body(ui, |ui| {
+                        self.todo_list.ui(ui);
                     });
                 });
             });
@@ -571,10 +718,23 @@ impl VinceToolsApp {
 
     fn save_runtime_data(&self) {
         let windows = PersistedWindowPositions {
-            json: pos2_to_window_position(self.json_last_position),
-            clipboard: pos2_to_window_position(self.clipboard_last_position),
-            crazy_piano: pos2_to_window_position(self.crazy_piano_last_position),
-            settings: pos2_to_window_position(self.settings_last_position),
+            json: viewport_state_to_window_position(self.json_last_position, self.json_last_size),
+            clipboard: viewport_state_to_window_position(
+                self.clipboard_last_position,
+                self.clipboard_last_size,
+            ),
+            crazy_piano: viewport_state_to_window_position(
+                self.crazy_piano_last_position,
+                self.crazy_piano_last_size,
+            ),
+            todo_list: viewport_state_to_window_position(
+                self.todo_list_last_position,
+                self.todo_list_last_size,
+            ),
+            settings: viewport_state_to_window_position(
+                self.settings_last_position,
+                self.settings_last_size,
+            ),
         };
 
         if let Err(err) =
@@ -590,6 +750,11 @@ impl VinceToolsApp {
             self.clipboard.items(),
         ) {
             eprintln!("failed to save clipboard history: {err}");
+        }
+        if let Err(err) =
+            save_todo_lists(&self.data_dir.join(TODO_LISTS_FILE), self.todo_list.lists())
+        {
+            eprintln!("failed to save todo lists: {err}");
         }
     }
 }
@@ -677,13 +842,14 @@ fn tool_panel<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> 
 
     ui.painter().rect_filled(panel_rect, 0.0, Color32::WHITE);
 
-    ui.scope_builder(
+    let output = ui.scope_builder(
         UiBuilder::new()
             .max_rect(panel_rect)
             .layout(Layout::top_down(Align::Min)),
         add_contents,
-    )
-    .inner
+    );
+    tool_resize_edges(ui, panel_rect);
+    output.inner
 }
 
 fn tool_body<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -691,6 +857,124 @@ fn tool_body<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R
         .inner_margin(14)
         .show(ui, add_contents)
         .inner
+}
+
+fn tool_resize_edges(ui: &mut egui::Ui, rect: Rect) {
+    let edge = TOOL_RESIZE_EDGE;
+    let corner = TOOL_RESIZE_CORNER
+        .min(rect.width() / 2.0)
+        .min(rect.height() / 2.0);
+
+    let north = Rect::from_min_max(
+        pos2(rect.left() + corner, rect.top()),
+        pos2(rect.right() - corner, rect.top() + edge),
+    );
+    let south = Rect::from_min_max(
+        pos2(rect.left() + corner, rect.bottom() - edge),
+        pos2(rect.right() - corner, rect.bottom()),
+    );
+    let west = Rect::from_min_max(
+        pos2(rect.left(), rect.top() + corner),
+        pos2(rect.left() + edge, rect.bottom() - corner),
+    );
+    let east = Rect::from_min_max(
+        pos2(rect.right() - edge, rect.top() + corner),
+        pos2(rect.right(), rect.bottom() - corner),
+    );
+    let north_west = Rect::from_min_max(
+        rect.left_top(),
+        pos2(rect.left() + corner, rect.top() + corner),
+    );
+    let north_east = Rect::from_min_max(
+        pos2(rect.right() - corner, rect.top()),
+        pos2(rect.right(), rect.top() + corner),
+    );
+    let south_west = Rect::from_min_max(
+        pos2(rect.left(), rect.bottom() - corner),
+        pos2(rect.left() + corner, rect.bottom()),
+    );
+    let south_east = Rect::from_min_max(
+        pos2(rect.right() - corner, rect.bottom() - corner),
+        rect.right_bottom(),
+    );
+
+    resize_hot_zone(
+        ui,
+        north_west,
+        ResizeDirection::NorthWest,
+        CursorIcon::ResizeNorthWest,
+        "north-west",
+    );
+    resize_hot_zone(
+        ui,
+        north_east,
+        ResizeDirection::NorthEast,
+        CursorIcon::ResizeNorthEast,
+        "north-east",
+    );
+    resize_hot_zone(
+        ui,
+        south_west,
+        ResizeDirection::SouthWest,
+        CursorIcon::ResizeSouthWest,
+        "south-west",
+    );
+    resize_hot_zone(
+        ui,
+        south_east,
+        ResizeDirection::SouthEast,
+        CursorIcon::ResizeSouthEast,
+        "south-east",
+    );
+    resize_hot_zone(
+        ui,
+        north,
+        ResizeDirection::North,
+        CursorIcon::ResizeNorth,
+        "north",
+    );
+    resize_hot_zone(
+        ui,
+        south,
+        ResizeDirection::South,
+        CursorIcon::ResizeSouth,
+        "south",
+    );
+    resize_hot_zone(
+        ui,
+        west,
+        ResizeDirection::West,
+        CursorIcon::ResizeWest,
+        "west",
+    );
+    resize_hot_zone(
+        ui,
+        east,
+        ResizeDirection::East,
+        CursorIcon::ResizeEast,
+        "east",
+    );
+}
+
+fn resize_hot_zone(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    direction: ResizeDirection,
+    cursor: CursorIcon,
+    id_salt: &'static str,
+) {
+    let response = ui
+        .interact(
+            rect,
+            ui.make_persistent_id(("tool-resize-edge", id_salt)),
+            Sense::click_and_drag(),
+        )
+        .on_hover_cursor(cursor);
+
+    if response.drag_started() {
+        ui.ctx()
+            .send_viewport_cmd(ViewportCommand::BeginResize(direction));
+    }
 }
 
 fn paint_horizontal_gradient_rect(
@@ -955,6 +1239,10 @@ fn crazy_piano_viewport_id() -> ViewportId {
     ViewportId::from_hash_of("vince-tools-crazy-piano-window")
 }
 
+fn todo_list_viewport_id() -> ViewportId {
+    ViewportId::from_hash_of("vince-tools-todo-list-window")
+}
+
 fn settings_viewport_id() -> ViewportId {
     ViewportId::from_hash_of("vince-tools-settings-window")
 }
@@ -969,11 +1257,10 @@ fn centered_tool_builder(ctx: &egui::Context, title: &str, size: Vec2) -> Viewpo
     let mut builder = ViewportBuilder::default()
         .with_title(format!("{APP_TITLE} - {title}"))
         .with_inner_size(size)
-        .with_min_inner_size(size)
-        .with_max_inner_size(size)
+        .with_min_inner_size(TOOL_MIN_SIZE)
         .with_decorations(false)
         .with_transparent(false)
-        .with_resizable(false)
+        .with_resizable(true)
         .with_taskbar(true);
 
     if let Some(position) = centered_position(ctx, size) {
@@ -1018,11 +1305,27 @@ fn place_viewport_once(
     true
 }
 
-fn record_viewport_position(ctx: &egui::Context, position: &mut Option<egui::Pos2>) {
-    if let Some(current_position) =
-        ctx.input(|input| input.viewport().outer_rect.map(|rect| rect.min))
-    {
+fn record_viewport_state(
+    ctx: &egui::Context,
+    position: &mut Option<egui::Pos2>,
+    size: &mut Option<Vec2>,
+) {
+    let (current_position, current_size) = ctx.input(|input| {
+        let viewport = input.viewport();
+        (
+            viewport.outer_rect.map(|rect| rect.min),
+            viewport
+                .inner_rect
+                .or(viewport.outer_rect)
+                .map(|rect| rect.size()),
+        )
+    });
+
+    if let Some(current_position) = current_position {
         *position = Some(current_position);
+    }
+    if let Some(current_size) = current_size.and_then(valid_window_size) {
+        *size = Some(current_size);
     }
 }
 
@@ -1096,6 +1399,20 @@ fn save_clipboard_history(path: &Path, items: &[String]) -> Result<(), String> {
     )
 }
 
+fn load_todo_lists(path: &Path) -> Vec<TodoList> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn save_todo_lists(path: &Path, lists: &[TodoList]) -> Result<(), String> {
+    write_text_file(
+        path,
+        &serde_json::to_string_pretty(lists).map_err(|err| err.to_string())?,
+    )
+}
+
 fn write_text_file(path: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
@@ -1103,15 +1420,21 @@ fn write_text_file(path: &Path, text: &str) -> Result<(), String> {
     fs::write(path, text).map_err(|err| err.to_string())
 }
 
-fn pos2_to_window_position(position: Option<egui::Pos2>) -> Option<WindowPosition> {
+fn viewport_state_to_window_position(
+    position: Option<egui::Pos2>,
+    size: Option<Vec2>,
+) -> Option<WindowPosition> {
     let position = position?;
     if !position.x.is_finite() || !position.y.is_finite() {
         return None;
     }
+    let size = size.and_then(valid_window_size);
 
     Some(WindowPosition {
         x: position.x,
         y: position.y,
+        width: size.map(|size| size.x),
+        height: size.map(|size| size.y),
     })
 }
 
@@ -1122,6 +1445,22 @@ fn window_position_to_pos2(position: Option<WindowPosition>) -> Option<egui::Pos
     }
 
     Some(pos2(position.x, position.y))
+}
+
+fn window_position_to_size(position: Option<WindowPosition>) -> Option<Vec2> {
+    let position = position?;
+    valid_window_size(vec2(position.width?, position.height?))
+}
+
+fn valid_window_size(size: Vec2) -> Option<Vec2> {
+    if !size.x.is_finite() || !size.y.is_finite() || size.x <= 0.0 || size.y <= 0.0 {
+        return None;
+    }
+
+    Some(vec2(
+        size.x.max(TOOL_MIN_SIZE.x),
+        size.y.max(TOOL_MIN_SIZE.y),
+    ))
 }
 
 fn save_config(path: &Path, config: &AppConfig) -> Result<(), String> {
