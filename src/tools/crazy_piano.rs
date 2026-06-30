@@ -27,9 +27,9 @@ const MAX_OVERLAY_HEIGHT: f32 = 720.0;
 const KEY_ACTIVE_SECONDS: f64 = 0.24;
 const KEY_THROTTLE_SECONDS: f64 = 0.045;
 const KEY_POLL_INTERVAL: Duration = Duration::from_millis(12);
-const MAX_OVERLAY_OPACITY: f32 = 0.5;
+const MAX_OVERLAY_OPACITY: f32 = 1.0;
 const DEFAULT_OVERLAY_OPACITY_BOOST: f32 = 0.07;
-const DEFAULT_MIN_OVERLAY_OPACITY: f32 = 0.0;
+const DEFAULT_OVERLAY_OPACITY_CAP: f32 = 1.0;
 const DEFAULT_OVERLAY_FADE_SECONDS: f32 = 1.1;
 const OVERLAY_IDLE_DELAY: f64 = 0.25;
 const WHITE_KEY_WIDTH: f32 = 82.0;
@@ -52,7 +52,7 @@ pub struct CrazyPianoTool {
     volume: f32,
     overlay_height: f32,
     overlay_opacity_boost: f32,
-    min_overlay_opacity: f32,
+    overlay_opacity_cap: f32,
     overlay_fade_seconds: f32,
     overlay_opacity: f32,
     last_key_at: f64,
@@ -77,7 +77,7 @@ impl CrazyPianoTool {
             volume: 0.7,
             overlay_height: DEFAULT_OVERLAY_HEIGHT,
             overlay_opacity_boost: DEFAULT_OVERLAY_OPACITY_BOOST,
-            min_overlay_opacity: DEFAULT_MIN_OVERLAY_OPACITY,
+            overlay_opacity_cap: DEFAULT_OVERLAY_OPACITY_CAP,
             overlay_fade_seconds: DEFAULT_OVERLAY_FADE_SECONDS,
             overlay_opacity: 0.0,
             last_key_at: -1.0,
@@ -174,14 +174,14 @@ impl CrazyPianoTool {
                         ui,
                         "连续按键透明度系数",
                         &mut self.overlay_opacity_boost,
-                        0.0..=0.25,
+                        0.0..=0.5,
                         150.0,
                     );
                     parameter_slider(
                         ui,
-                        "最小透明度",
-                        &mut self.min_overlay_opacity,
-                        0.0..=MAX_OVERLAY_OPACITY,
+                        "按键最高透明度",
+                        &mut self.overlay_opacity_cap,
+                        0.1..=1.0,
                         150.0,
                     );
                     parameter_slider(
@@ -262,10 +262,10 @@ impl CrazyPianoTool {
         self.recent_key = Some(event.key);
         self.last_error = None;
         self.last_key_at = event.at;
-        let min_opacity = self.min_overlay_opacity.clamp(0.0, MAX_OVERLAY_OPACITY);
-        self.overlay_opacity = (self.overlay_opacity.max(min_opacity)
+        let opacity_cap = self.overlay_opacity_cap.clamp(0.1, MAX_OVERLAY_OPACITY);
+        self.overlay_opacity = (self.overlay_opacity
             + self.overlay_opacity_boost.clamp(0.0, MAX_OVERLAY_OPACITY))
-        .min(MAX_OVERLAY_OPACITY);
+        .min(opacity_cap);
 
         if self.animation_enabled {
             self.active_keys.insert(event.key, event.at);
@@ -294,11 +294,10 @@ impl CrazyPianoTool {
         self.last_overlay_tick = now;
 
         if self.last_key_at >= 0.0 && now - self.last_key_at > OVERLAY_IDLE_DELAY {
-            let min_opacity = self.min_overlay_opacity.clamp(0.0, MAX_OVERLAY_OPACITY);
             let fade_seconds = self.overlay_fade_seconds.max(0.1);
-            let fade_per_second = (MAX_OVERLAY_OPACITY - min_opacity).max(0.01) / fade_seconds;
-            self.overlay_opacity = (self.overlay_opacity - dt * fade_per_second).max(min_opacity);
-            if min_opacity <= 0.001 && self.overlay_opacity <= 0.001 {
+            let fade_per_second = MAX_OVERLAY_OPACITY / fade_seconds;
+            self.overlay_opacity = (self.overlay_opacity - dt * fade_per_second).max(0.0);
+            if self.overlay_opacity <= 0.001 {
                 self.overlay_opacity = 0.0;
             }
         }
@@ -334,6 +333,7 @@ impl CrazyPianoTool {
             width,
             height,
             opacity: self.overlay_opacity,
+            time: now,
             keys: self.overlay_keys(width as f32, height as f32, now),
         }
     }
@@ -344,7 +344,7 @@ impl CrazyPianoTool {
             .into_iter()
             .zip(white_rects.iter().copied())
             .map(|(key, rect)| OverlayKeyFrame {
-                label: key.label,
+                label: key.label.to_owned(),
                 x: rect.x,
                 y: rect.y,
                 width: rect.width,
@@ -366,7 +366,7 @@ impl CrazyPianoTool {
             let black_height = height * 0.58;
             let center_x = (left.right() + right.x) * 0.5;
             keys.push(OverlayKeyFrame {
-                label: key.label,
+                label: key.label.to_owned(),
                 x: center_x - black_width / 2.0,
                 y: 0.0,
                 width: black_width,

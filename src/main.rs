@@ -19,6 +19,8 @@ use tools::{
     clipboard_history::ClipboardHistoryTool, crazy_piano::CrazyPianoTool, json_tool::JsonTool,
 };
 
+mod piano_overlay_child;
+mod piano_overlay_protocol;
 mod tools;
 
 const APP_TITLE: &str = "Vince Tools";
@@ -38,6 +40,10 @@ const MENU_BUTTON_FONT_SIZE: f32 = 12.0;
 const DEFAULT_ICON_BYTES: &[u8] = include_bytes!("asset/default.png");
 
 fn main() -> eframe::Result<()> {
+    if std::env::args().any(|arg| arg == piano_overlay_protocol::PIANO_OVERLAY_CHILD_ARG) {
+        return piano_overlay_child::run();
+    }
+
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_title(APP_TITLE)
@@ -49,6 +55,7 @@ fn main() -> eframe::Result<()> {
             .with_resizable(false)
             .with_always_on_top()
             .with_taskbar(false),
+        renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
 
@@ -653,33 +660,15 @@ fn paint_horizontal_gradient_rect(
 }
 
 fn full_width_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    menu_button_response(
-        ui,
-        text,
-        Color32::from_rgb(248, 250, 253),
-        Color32::from_rgb(218, 227, 240),
-        Color32::from_rgb(37, 51, 76),
-    )
+    menu_button_response(ui, text)
 }
 
 fn full_width_primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    menu_button_response(
-        ui,
-        text,
-        Color32::from_rgb(61, 111, 246),
-        Color32::from_rgb(61, 111, 246),
-        Color32::WHITE,
-    )
+    full_width_button(ui, text)
 }
 
 fn full_width_danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    menu_button_response(
-        ui,
-        text,
-        Color32::from_rgb(255, 245, 245),
-        Color32::from_rgb(241, 190, 190),
-        Color32::from_rgb(154, 52, 52),
-    )
+    full_width_button(ui, text)
 }
 
 pub(crate) fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
@@ -777,19 +766,13 @@ fn paint_window_control_icon(ui: &egui::Ui, rect: Rect, kind: WindowControlKind)
     }
 }
 
-fn menu_button_response(
-    ui: &mut egui::Ui,
-    text: &str,
-    fill: Color32,
-    stroke: Color32,
-    text_color: Color32,
-) -> egui::Response {
+fn menu_button_response(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let (slot_rect, response) = ui.allocate_exact_size(
         vec2(ui.available_width(), MENU_BUTTON_SLOT_HEIGHT),
         Sense::click(),
     );
-    let hovered = response.hovered();
-    let rect = if hovered {
+    let focused = response.hovered() || response.has_focus();
+    let rect = if focused {
         slot_rect
     } else {
         Rect::from_center_size(
@@ -797,10 +780,23 @@ fn menu_button_response(
             vec2(slot_rect.width() - 6.0, MENU_BUTTON_HEIGHT),
         )
     };
-    let font_size = if hovered {
+    let font_size = if focused {
         MENU_BUTTON_HOVER_FONT_SIZE
     } else {
         MENU_BUTTON_FONT_SIZE
+    };
+    let (fill, stroke, text_color) = if focused {
+        (
+            Color32::from_rgb(61, 111, 246),
+            Color32::from_rgb(61, 111, 246),
+            Color32::WHITE,
+        )
+    } else {
+        (
+            Color32::WHITE,
+            Color32::from_rgb(218, 227, 240),
+            Color32::from_rgb(37, 51, 76),
+        )
     };
 
     ui.painter().rect(

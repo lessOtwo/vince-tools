@@ -2,13 +2,14 @@
 name = "vince-tools"
 version = "0.1.0"
 edition = "2024"
+default-run = "vince-tools"
 
 [dependencies]
 anyhow = "1"
 arboard = { version = "3", default-features = false }
 device_query = "4.0.1"
 directories = "6"
-eframe = { version = "0.31", default-features = false, features = ["glow"] }
+eframe = { version = "0.31", default-features = false, features = ["glow", "wgpu"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav"] }
 rfd = { version = "0.15", default-features = false }
